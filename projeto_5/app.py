@@ -16,11 +16,17 @@ if query:
     if results:
         df = pd.DataFrame(results)
         df = df.sort_values("Preço (R$)").reset_index(drop=True)
-        df["Preço (R$)"] = df["Preço (R$)"].apply(lambda x: f"R$ {x:,.2f}")
+
+        def highlight_lowest_price(row):
+            if row.name == 0:
+                return ['background-color: rgba(40, 167, 69, 0.3); font-weight: bold'] * len(row)
+            return [''] * len(row)
+
+        styled_df = df[["Produto", "Loja", "Preço (R$)"]].style.apply(highlight_lowest_price, axis=1).format({"Preço (R$)": "R$ {:,.2f}"})
 
         st.success(f"{len(results)} resultado(s) encontrado(s).")
         st.dataframe(
-            df[["Produto", "Loja", "Preço (R$)"]],
+            styled_df,
             use_container_width=True,
             hide_index=True,
         )
