@@ -28,6 +28,71 @@ def _parse_price_br(text):
         return 0.0
 
 
+# ── Mapeamento de categorias brutas → categorias amplas ──────────────────────
+# As chaves são as categorias amplas exibidas ao usuário.
+# Os valores são listas de substrings buscadas na categoria bruta scraped.
+_CATEGORIA_MAP = {
+    "Informática": [
+        "notebook", "laptop", "computador", "desktop", "pc", "processador",
+        "placa", "memoria", "memória", "ssd", "hdd", "nvme", "fonte", "gabinete",
+        "cooler", "monitor", "teclado", "mouse", "headset", "webcam", "impressora",
+        "scanner", "roteador", "switch", "rede", "cabo", "hub", "nobreak",
+        "servidor", "server", "periférico", "periferico", "informatica", "informática",
+        "hardware", "componente",
+    ],
+    "Eletrônicos": [
+        "tv", "televisor", "televisão", "audio", "áudio", "som", "caixa de som",
+        "fone", "headphone", "projetor", "dvd", "blu-ray", "camera", "câmera",
+        "fotografica", "fotográfica", "drone", "filmadora", "eletronico", "eletrônico",
+        "eletronicos", "eletrônicos", "home theater",
+    ],
+    "Celulares & Tablets": [
+        "smartphone", "celular", "iphone", "android", "tablet", "ipad",
+        "smartwatch", "wearable", "watch",
+    ],
+    "Eletrodomésticos": [
+        "geladeira", "refrigerador", "fogao", "fogão", "microondas", "lavadora",
+        "lavar", "secadora", "aspirador", "ventilador", "ar condicionado", "ar-condicionado",
+        "purificador", "batedeira", "liquidificador", "cafeteira", "forno",
+        "churrasqueira", "eletrodomestico", "eletrodoméstico", "eletrodomesticos",
+        "eletrodomésticos", "cozinha", "utilidade",
+    ],
+    "Móveis & Decoração": [
+        "guarda-roupa", "guarda roupa", "roupeiro",
+        "movel", "móvel", "moveis", "móveis", "sofa", "sofá", "mesa", "cadeira",
+        "cama", "armario", "armário", "estante", "prateleira", "tapete",
+        "cortina", "luminaria", "luminária", "decoracao", "decoração", "colchao",
+        "colchão",
+    ],
+    "Roupas & Moda": [
+        "roupas", "camisa", "camiseta", "calca", "calça", "shorts", "vestido",
+        "sapato", "tenis", "tênis", "bota", "bolsa", "mochila", "carteira",
+        "oculos", "óculos", "relogio", "relógio", "joia", "joias", "jóias",
+        "moda", "vestuario", "vestuário", "calcado", "calçado",
+    ],
+    "Games": [
+        "game", "jogo", "console", "playstation", "xbox", "nintendo",
+        "controle", "games", "gamer",
+    ],
+}
+
+
+def _normalizar_categoria(categoria_bruta: str) -> str:
+    """
+    Normaliza uma categoria bruta (URL slug, label JSON, path hierárquico)
+    para uma das categorias amplas definidas em _CATEGORIA_MAP.
+    Retorna 'Outros' se nenhum mapeamento for encontrado.
+    """
+    if not categoria_bruta:
+        return "Outros"
+    texto = categoria_bruta.lower()
+    for categoria_ampla, keywords in _CATEGORIA_MAP.items():
+        for kw in keywords:
+            if kw in texto:
+                return categoria_ampla
+    return "Outros"
+
+
 def search_kabum(query, limit=5):
     """Busca produtos no Kabum extraindo dados do __NEXT_DATA__."""
     url = f"https://www.kabum.com.br/busca/{urllib.parse.quote(query)}"
@@ -56,10 +121,26 @@ def search_kabum(query, limit=5):
             price = p.get("priceWithDiscount", p.get("price", 0))
             if not price or price <= 0:
                 continue
+
+            # Extrai categoria bruta do JSON do Kabum e normaliza
+            category_obj = p.get("category") or {}
+            if isinstance(category_obj, dict):
+                raw_cat = category_obj.get("name") or category_obj.get("friendlyName") or ""
+            else:
+                raw_cat = str(category_obj)
+            if not raw_cat:
+                raw_cat = (
+                    p.get("categoryName")
+                    or p.get("departmentFriendlyName")
+                    or p.get("sectionName")
+                    or ""
+                )
+
             results.append({
                 "Produto": p.get("name", ""),
                 "Preço (R$)": float(price),
                 "Loja": "Kabum",
+                "Categoria": _normalizar_categoria(raw_cat),
                 "Link": f"https://www.kabum.com.br/produto/{p.get('code', '')}",
             })
         return results
@@ -93,10 +174,22 @@ def search_terabyte(query, limit=5):
                 if link and not link.startswith("http"):
                     link = "https://www.terabyteshop.com.br" + link
 
+                # Extrai categoria bruta da URL do produto e normaliza
+                # Formato típico: /produto/<categoria-slug>/<nome>
+                raw_cat = ""
+                try:
+                    from urllib.parse import urlparse
+                    partes = urlparse(link).path.strip("/").split("/")
+                    if len(partes) >= 2 and partes[0] == "produto":
+                        raw_cat = partes[1].replace("-", " ")
+                except Exception:
+                    pass
+
                 results.append({
                     "Produto": name,
                     "Preço (R$)": price,
                     "Loja": "Terabyte",
+                    "Categoria": _normalizar_categoria(raw_cat),
                     "Link": link,
                 })
             except (ValueError, AttributeError):
@@ -133,10 +226,24 @@ def search_zoom(query, limit=5):
                 if not name or not price:
                     continue
 
+                # Extrai categoria bruta do JSON do Zoom e normaliza
+                raw_cat = ""
+                cat_path = h.get("categoryPath") or h.get("category") or ""
+                if isinstance(cat_path, str) and cat_path:
+                    # "Informatica > Componentes > Processadores" → concatena tudo para o mapeamento
+                    raw_cat = cat_path
+                elif isinstance(cat_path, list) and cat_path:
+                    raw_cat = " ".join(str(c) for c in cat_path)
+                else:
+                    breadcrumbs = h.get("breadcrumbs") or []
+                    if breadcrumbs:
+                        raw_cat = " ".join(b.get("name", "") for b in breadcrumbs if b.get("name"))
+
                 results.append({
                     "Produto": name,
                     "Preço (R$)": float(price),
                     "Loja": merchant,
+                    "Categoria": _normalizar_categoria(raw_cat),
                     "Link": link,
                 })
             except (ValueError, TypeError):
@@ -146,7 +253,7 @@ def search_zoom(query, limit=5):
         return []
 
 
-def search_all(query, limit=5):
+def search_all(query, limit=10):
     """Busca em todas as fontes disponíveis e retorna lista agregada."""
     all_results = []
     # Usando Zoom primeiro pois agrega muitas lojas, depois Kabum e Terabyte para cobertura tech
