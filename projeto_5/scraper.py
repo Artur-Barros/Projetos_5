@@ -1,7 +1,3 @@
-"""
-Módulo de scraping para coleta de preços em lojas online.
-Fontes: Kabum, Terabyte e Zoom (agregador de lojas como Amazon, Magalu, etc).
-"""
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
@@ -16,7 +12,6 @@ HEADERS = {
 
 
 def _parse_price_br(text):
-    """Converte texto de preço brasileiro (R$ 1.234,56) para float."""
     if not text:
         return 0.0
     text = text.replace("R$", "").replace("\xa0", "").strip()
@@ -28,73 +23,193 @@ def _parse_price_br(text):
         return 0.0
 
 
-# ── Mapeamento de categorias brutas → categorias amplas ──────────────────────
-# As chaves são as categorias amplas exibidas ao usuário.
-# Os valores são listas de substrings buscadas na categoria bruta scraped.
 _CATEGORIA_MAP = {
     "Informática": [
-        "notebook", "laptop", "computador", "desktop", "pc", "processador",
-        "placa", "memoria", "memória", "ssd", "hdd", "nvme", "fonte", "gabinete",
-        "cooler", "monitor", "teclado", "mouse", "headset", "webcam", "impressora",
-        "scanner", "roteador", "switch", "rede", "cabo", "hub", "nobreak",
+        "notebook", "laptop", "computador", "desktop", "processador",
+        "placa de video", "placa mãe", "placa-mae", "memoria", "memória", "ssd", "hdd",
+        "nvme", "fonte atx", "gabinete", "cooler", "monitor", "teclado", "headset",
+        "webcam", "impressora", "scanner", "roteador", "switch de rede", "nobreak",
         "servidor", "server", "periférico", "periferico", "informatica", "informática",
-        "hardware", "componente",
+        "hardware", "componente", "mesa digitalizadora", "computação", "computacao",
     ],
     "Eletrônicos": [
-        "tv", "televisor", "televisão", "audio", "áudio", "som", "caixa de som",
-        "fone", "headphone", "projetor", "dvd", "blu-ray", "camera", "câmera",
-        "fotografica", "fotográfica", "drone", "filmadora", "eletronico", "eletrônico",
+        "televisor", "televisão", "televisao", "áudio", "audio", "caixa de som",
+        "headphone", "projetor", "blu-ray", "câmera", "camera", "fotografica",
+        "fotográfica", "drone", "filmadora", "eletronico", "eletrônico",
         "eletronicos", "eletrônicos", "home theater",
     ],
     "Celulares & Tablets": [
         "smartphone", "celular", "iphone", "android", "tablet", "ipad",
-        "smartwatch", "wearable", "watch",
+        "smartwatch", "wearable",
     ],
     "Eletrodomésticos": [
-        "geladeira", "refrigerador", "fogao", "fogão", "microondas", "lavadora",
-        "lavar", "secadora", "aspirador", "ventilador", "ar condicionado", "ar-condicionado",
-        "purificador", "batedeira", "liquidificador", "cafeteira", "forno",
-        "churrasqueira", "eletrodomestico", "eletrodoméstico", "eletrodomesticos",
-        "eletrodomésticos", "cozinha", "utilidade",
+        "geladeira", "refrigerador", "fogão", "fogao", "microondas", "lavadora",
+        "secadora", "aspirador", "ventilador", "ar condicionado", "ar-condicionado",
+        "purificador", "batedeira", "liquidificador", "cafeteira", "forno eletrico",
+        "churrasqueira eletrica", "eletrodomestico", "eletrodoméstico",
+        "eletrodomesticos", "eletrodomésticos",
     ],
     "Móveis & Decoração": [
-        "guarda-roupa", "guarda roupa", "roupeiro",
-        "movel", "móvel", "moveis", "móveis", "sofa", "sofá", "mesa", "cadeira",
-        "cama", "armario", "armário", "estante", "prateleira", "tapete",
-        "cortina", "luminaria", "luminária", "decoracao", "decoração", "colchao",
-        "colchão",
+        "móveis", "moveis", "móvel", "movel", "sofá", "sofa", "poltrona",
+        "rack", "estante", "criado-mudo", "criado mudo", "buffet", "aparador",
+        "cômoda", "comoda", "cabeceira", "painel de tv", "tapete",
+        "cortina", "luminária", "luminaria", "decoração", "decoracao",
+        "colchão", "colchao", "armário", "armario", "prateleira",
     ],
     "Roupas & Moda": [
-        "roupas", "camisa", "camiseta", "calca", "calça", "shorts", "vestido",
-        "sapato", "tenis", "tênis", "bota", "bolsa", "mochila", "carteira",
-        "oculos", "óculos", "relogio", "relógio", "joia", "joias", "jóias",
-        "moda", "vestuario", "vestuário", "calcado", "calçado",
+        "camisa", "camiseta", "calça", "calca", "shorts", "vestido", "bermuda",
+        "sapato", "tênis", "tenis", "bota", "sandália", "sandalia", "chinelo",
+        "bolsa feminina", "mochila escolar", "jaqueta", "casaco", "blusa",
+        "moda feminina", "moda masculina", "vestuário", "vestuario",
+        "calçado", "calcado", "lingerie", "meia", "cueca", "sutiã", "sutia",
     ],
     "Games": [
-        "game", "jogo", "console", "playstation", "xbox", "nintendo",
-        "controle", "games", "gamer",
+        "videogame", "playstation", "xbox", "nintendo", "console",
+        "jogo para", "jogos para", "game pass", "steam deck",
     ],
 }
 
+_REGEX_PRIORIDADE = [
+    ("Móveis & Decoração", [
+        r"guarda[\s-]?roupas?",
+        r"roupeiro",
+        r"criado[\s-]?mudo",
+        r"\bsof[aá]\b",
+        r"\bcolch[aã]o\b",
+        r"\bestante\b",
+        r"\bpoltrona\b",
+        r"\bcomoda\b",
+        r"\bc[oô]moda\b",
+        r"\bbuffet\b",
+        r"\baparador\b",
+        r"\bmesa\s+de\s+jantar\b",
+        r"\bmesa\s+de\s+centro\b",
+        r"\bmesa\s+redonda\b",
+        r"\bmesa\s+quadrada\b",
+    ]),
+    ("Informática", [
+        r"\bmesa\s+gamer\b",
+        r"\bmesa\s+escrit[oó]rio\b",
+        r"\bcadeira\s+gamer\b",
+        r"\bcadeira\s+de\s+escrit[oó]rio\b",
+        r"\bcadeira\s+escrit[oó]rio\b",
+        r"mouse[\s-]?pad",
+        r"mousepad",
+        r"\bmouse\b",
+        r"\bnotebook\b",
+        r"\bteclado\b",
+        r"\bmonitor\b",
+        r"\bssd\b",
+        r"\bgabinete\b",
+        r"\bplaca\s+de\s+video\b",
+        r"\bplaca\s+m[aã]e\b",
+        r"\bprocessador\b",
+        r"\bmem[oó]ria\b",
+        r"\bheadset\b",
+        r"\bwebcam\b",
+        r"\bnobreak\b",
+        r"mesa\s+digitalizadora",
+    ]),
+    ("Roupas & Moda", [
+        r"\bcamiseta\b",
+        r"\bcamisa\b",
+        r"\bcal[cç]a\b",
+        r"\bvestido\b",
+        r"\bbermuda\b",
+        r"\bjaqueta\b",
+        r"\bcasaco\b",
+        r"\bblusa\b",
+        r"\bshorts\b",
+        r"\btenis\b",
+        r"\bt[eê]nis\b",
+        r"\bsapato\b",
+        r"\bbota\b",
+        r"\bchinelo\b",
+        r"\blingerie\b",
+        r"\bmoda\b",
+        r"\bbody\b",
+        r"\bbon[eé]\b",
+        r"\bbolsa\b",
+        r"\bmochila\b",
+        r"\bmacac[aã]o\b",
+        r"\bsaia\b",
+        r"\bmoda\s+(feminina|masculina|infantil)\b",
+        r"\bvestu[aá]rio\b",
+        r"\bfashion\b",
+    ]),
+    ("Games", [
+        r"\bplaystation\b",
+        r"\bxbox\b",
+        r"\bnintendo\b",
+        r"\bvideogame\b",
+        r"\bconsole\b",
+        r"\bgame\s+pass\b",
+    ]),
+    ("Celulares & Tablets", [
+        r"\bsmartphone\b",
+        r"\bcelular\b",
+        r"\biphone\b",
+        r"\btablet\b",
+        r"\bipad\b",
+        r"\bsmartwatch\b",
+    ]),
+    ("Eletrodomésticos", [
+        r"\bgeladeira\b",
+        r"\bmicroondas\b",
+        r"\blavadora\b",
+        r"\bsecadora\b",
+        r"\bar[\s-]?condicionado\b",
+    ]),
+    ("Eletrônicos", [
+        r"\btelevis(o|ão|ao)\b",
+        r"\btv\b",
+        r"\bhome\s+theater\b",
+        r"\bcaixa\s+de\s+som\b",
+    ]),
+]
 
-def _normalizar_categoria(categoria_bruta: str) -> str:
-    """
-    Normaliza uma categoria bruta (URL slug, label JSON, path hierárquico)
-    para uma das categorias amplas definidas em _CATEGORIA_MAP.
-    Retorna 'Outros' se nenhum mapeamento for encontrado.
-    """
-    if not categoria_bruta:
+_PALAVRAS_CURTAS = frozenset({
+    "tv", "pc", "ssd", "hdd", "nvme", "hub", "dvd", "ipad",
+})
+
+
+def _texto_classificacao(produto: str, categoria_bruta: str) -> str:
+    partes = [categoria_bruta or "", produto or ""]
+    texto = " ".join(partes).lower()
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+def _keyword_casa(texto: str, kw: str) -> bool:
+    if " " in kw or "-" in kw:
+        return kw in texto
+    if kw in _PALAVRAS_CURTAS:
+        return re.search(rf"\b{re.escape(kw)}\b", texto) is not None
+    return re.search(rf"\b{re.escape(kw)}\b", texto) is not None
+
+
+def classificar_produto(produto: str = "", categoria_bruta: str = "") -> str:
+    texto = _texto_classificacao(produto, categoria_bruta)
+    if not texto:
         return "Outros"
-    texto = categoria_bruta.lower()
+
+    for categoria, padroes in _REGEX_PRIORIDADE:
+        for padrao in padroes:
+            if re.search(padrao, texto, re.IGNORECASE):
+                return categoria
+
     for categoria_ampla, keywords in _CATEGORIA_MAP.items():
-        for kw in keywords:
-            if kw in texto:
+        for kw in sorted(keywords, key=len, reverse=True):
+            if _keyword_casa(texto, kw):
                 return categoria_ampla
+
     return "Outros"
 
 
+def _normalizar_categoria(categoria_bruta: str, produto: str = "") -> str:
+    return classificar_produto(produto, categoria_bruta)
+
+
 def search_kabum(query, limit=5):
-    """Busca produtos no Kabum extraindo dados do __NEXT_DATA__."""
     url = f"https://www.kabum.com.br/busca/{urllib.parse.quote(query)}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
@@ -105,7 +220,6 @@ def search_kabum(query, limit=5):
             return []
 
         outer = json.loads(script.string)
-        # Handle cases where data might be nested differently or is a string
         page_props = outer.get("props", {}).get("pageProps", {})
         data_raw = page_props.get("data")
         
@@ -122,7 +236,6 @@ def search_kabum(query, limit=5):
             if not price or price <= 0:
                 continue
 
-            # Extrai categoria bruta do JSON do Kabum e normaliza
             category_obj = p.get("category") or {}
             if isinstance(category_obj, dict):
                 raw_cat = category_obj.get("name") or category_obj.get("friendlyName") or ""
@@ -140,7 +253,7 @@ def search_kabum(query, limit=5):
                 "Produto": p.get("name", ""),
                 "Preço (R$)": float(price),
                 "Loja": "Kabum",
-                "Categoria": _normalizar_categoria(raw_cat),
+                "Categoria": classificar_produto(p.get("name", ""), raw_cat),
                 "Link": f"https://www.kabum.com.br/produto/{p.get('code', '')}",
             })
         return results
@@ -149,7 +262,6 @@ def search_kabum(query, limit=5):
 
 
 def search_terabyte(query, limit=5):
-    """Busca produtos na Terabyte Shop via scraping HTML."""
     url = f"https://www.terabyteshop.com.br/busca?str={urllib.parse.quote(query)}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
@@ -174,8 +286,6 @@ def search_terabyte(query, limit=5):
                 if link and not link.startswith("http"):
                     link = "https://www.terabyteshop.com.br" + link
 
-                # Extrai categoria bruta da URL do produto e normaliza
-                # Formato típico: /produto/<categoria-slug>/<nome>
                 raw_cat = ""
                 try:
                     from urllib.parse import urlparse
@@ -189,7 +299,7 @@ def search_terabyte(query, limit=5):
                     "Produto": name,
                     "Preço (R$)": price,
                     "Loja": "Terabyte",
-                    "Categoria": _normalizar_categoria(raw_cat),
+                    "Categoria": classificar_produto(name, raw_cat),
                     "Link": link,
                 })
             except (ValueError, AttributeError):
@@ -200,7 +310,6 @@ def search_terabyte(query, limit=5):
 
 
 def search_zoom(query, limit=5):
-    """Busca produtos no Zoom (agregador de Amazon, Magalu, etc) via __NEXT_DATA__."""
     url = f"https://www.zoom.com.br/search?q={urllib.parse.quote(query)}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
@@ -226,11 +335,9 @@ def search_zoom(query, limit=5):
                 if not name or not price:
                     continue
 
-                # Extrai categoria bruta do JSON do Zoom e normaliza
                 raw_cat = ""
                 cat_path = h.get("categoryPath") or h.get("category") or ""
                 if isinstance(cat_path, str) and cat_path:
-                    # "Informatica > Componentes > Processadores" → concatena tudo para o mapeamento
                     raw_cat = cat_path
                 elif isinstance(cat_path, list) and cat_path:
                     raw_cat = " ".join(str(c) for c in cat_path)
@@ -243,7 +350,7 @@ def search_zoom(query, limit=5):
                     "Produto": name,
                     "Preço (R$)": float(price),
                     "Loja": merchant,
-                    "Categoria": _normalizar_categoria(raw_cat),
+                    "Categoria": classificar_produto(name, raw_cat),
                     "Link": link,
                 })
             except (ValueError, TypeError):
@@ -253,16 +360,64 @@ def search_zoom(query, limit=5):
         return []
 
 
+_CATEGORIA_BUSCA = {
+    "Roupas & Moda": {
+        "queries": ["camiseta", "calça", "tênis", "vestido", "blusa", "moda feminina"],
+        "apenas_zoom": True,
+        "limite_por_query": 20,
+    },
+    "Móveis & Decoração": {
+        "queries": ["sofá", "guarda-roupa", "estante", "mesa de jantar", "rack móvel"],
+        "apenas_zoom": True,
+        "limite_por_query": 20,
+    },
+}
+
+
+def _dedupe_resultados(resultados):
+    vistos = set()
+    unicos = []
+    for item in resultados:
+        chave = (item.get("Link") or item.get("Produto", ""), item.get("Loja", ""))
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        unicos.append(item)
+    return unicos
+
+
+def search_for_category(categoria: str, limit_por_query=None):
+    cfg = _CATEGORIA_BUSCA.get(categoria)
+    if not cfg:
+        return search_all(categoria, limit=10)
+
+    limite = limit_por_query or cfg.get("limite_por_query", 20)
+    acumulado = []
+    for termo in cfg["queries"]:
+        try:
+            if cfg.get("apenas_zoom"):
+                acumulado.extend(search_zoom(termo, limite))
+            else:
+                acumulado.extend(search_all(termo, limit=limite))
+        except Exception:
+            pass
+    return _dedupe_resultados(acumulado)
+
+
+def search_for_categories(categorias: list[str]):
+    acumulado = []
+    for cat in categorias:
+        acumulado.extend(search_for_category(cat))
+    return _dedupe_resultados(acumulado)
+
+
 def search_all(query, limit=10):
-    """Busca em todas as fontes disponíveis e retorna lista agregada."""
     all_results = []
-    # Usando Zoom primeiro pois agrega muitas lojas, depois Kabum e Terabyte para cobertura tech
     sources = [search_zoom, search_kabum, search_terabyte]
     for func in sources:
         try:
-            # Aumentando um pouco o limite individual para o agregador
             current_limit = limit * 2 if func == search_zoom else limit
             all_results.extend(func(query, current_limit))
         except Exception:
             pass
-    return all_results
+    return _dedupe_resultados(all_results)

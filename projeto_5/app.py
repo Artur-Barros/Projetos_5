@@ -1,6 +1,14 @@
 import streamlit as st
 import pandas as pd
-from scraper import search_all, _CATEGORIA_MAP
+from scraper import search_all, search_for_categories, _CATEGORIA_MAP, _CATEGORIA_BUSCA
+from analytics import (
+    adicionar_variacao_oferta,
+    resumo_por_loja,
+    variacao_entre_lojas,
+)
+
+MAX_OFERTAS_GRAFICO = 15
+LABEL_MAX_CHARS = 40
 
 st.set_page_config(page_title="Pricefy", layout="wide")
 
@@ -14,8 +22,8 @@ CATEGORY_SEARCH_TERMS = {
     "Eletrônicos":          "televisor câmera som",
     "Celulares & Tablets":  "smartphone celular",
     "Eletrodomésticos":     "geladeira microondas fogão",
-    "Móveis & Decoração":   "sofá cadeira mesa",
-    "Roupas & Moda":        "camiseta calçado roupa",
+    "Móveis & Decoração":   "sofá estante guarda-roupa",
+    "Roupas & Moda":        "camiseta calça tênis moda",
     "Games":                "videogame console joystick",
     "Outros":               "produto",
 }
@@ -66,10 +74,20 @@ else:
     search_term = None
 
 if search_term:
-    cache_key = search_term.strip().lower()
+    if busca_por_categoria:
+        cache_key = "cat:" + "|".join(sorted(categorias_selecionadas[:2]))
+    else:
+        cache_key = search_term.strip().lower()
     if st.session_state.get("last_search_key") != cache_key:
         with st.spinner("Buscando preços nas lojas..."):
-            results = search_all(search_term)
+            if busca_por_categoria:
+                cats_busca = [c for c in categorias_selecionadas[:2] if c in _CATEGORIA_BUSCA]
+                if cats_busca:
+                    results = search_for_categories(cats_busca)
+                else:
+                    results = search_all(search_term)
+            else:
+                results = search_all(search_term)
         if results:
             df = pd.DataFrame(results)
             df = df[df["Preço (R$)"] > 0].reset_index(drop=True)
@@ -89,8 +107,10 @@ if "df_resultados" in st.session_state:
     if df_full.empty:
         st.warning("Nenhum resultado encontrado. Tente outro termo ou categoria.")
     else:
-        if categorias_selecionadas and not busca_por_categoria:
-            cats_filtro = categorias_selecionadas
+        if categorias_selecionadas:
+            cats_filtro = list(categorias_selecionadas)
+            if busca_por_categoria:
+                cats_filtro.append("Outros")
         else:
             cats_filtro = list(df_full["Categoria"].unique())
 
@@ -112,20 +132,79 @@ if "df_resultados" in st.session_state:
         if df_filtrado.empty:
             st.warning("Nenhum resultado com os filtros aplicados. Ajuste os filtros na barra lateral.")
         else:
+            df_analise = adicionar_variacao_oferta(df_filtrado)
+            preco_min = float(df_analise["Preço (R$)"].min())
+            preco_max = float(df_analise["Preço (R$)"].max())
+            loja_mais_barata = df_analise.loc[df_analise["Preço (R$)"].idxmin(), "Loja"]
+            economia = preco_max - preco_min
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Menor preço", f"R$ {preco_min:,.2f}", loja_mais_barata)
+            m2.metric("Maior preço", f"R$ {preco_max:,.2f}")
+            m3.metric("Economia potencial", f"R$ {economia:,.2f}")
+
             def highlight_lowest_price(row):
                 if row.name == 0:
                     return ["background-color: rgba(40, 167, 69, 0.3); font-weight: bold"] * len(row)
                 return [""] * len(row)
 
-            colunas_exibir = ["Produto", "Loja", "Preço (R$)"]
+            colunas_exibir = [
+                "Produto",
+                "Loja",
+                "Preço (R$)",
+                "Δ vs menor (R$)",
+                "Δ vs menor (%)",
+            ]
             styled_df = (
-                df_filtrado[colunas_exibir]
+                df_analise[colunas_exibir]
                 .style.apply(highlight_lowest_price, axis=1)
-                .format({"Preço (R$)": "R$ {:,.2f}"})
+                .format({
+                    "Preço (R$)": "R$ {:,.2f}",
+                    "Δ vs menor (R$)": "R$ {:,.2f}",
+                    "Δ vs menor (%)": "{:.1f}%",
+                })
             )
 
             st.dataframe(
                 styled_df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.subheader("Comparação de preços por oferta")
+            df_grafico = df_analise.copy()
+            df_grafico["label"] = df_grafico.apply(
+                lambda r: (
+                    (r["Produto"][:LABEL_MAX_CHARS] + "…" if len(r["Produto"]) > LABEL_MAX_CHARS else r["Produto"])
+                    + " — "
+                    + r["Loja"]
+                ),
+                axis=1,
+            )
+            if len(df_grafico) > MAX_OFERTAS_GRAFICO:
+                st.caption(
+                    f"Exibindo as {MAX_OFERTAS_GRAFICO} ofertas mais baratas "
+                    f"de {len(df_grafico)} no total."
+                )
+                df_grafico = df_grafico.head(MAX_OFERTAS_GRAFICO)
+            st.bar_chart(
+                df_grafico,
+                x="label",
+                y="Preço (R$)",
+                color="Loja",
+            )
+
+            st.subheader("Comparação por loja")
+            df_lojas = variacao_entre_lojas(resumo_por_loja(df_filtrado))
+            st.dataframe(
+                df_lojas.style.format({
+                    "Preço mín. (R$)": "R$ {:,.2f}",
+                    "Preço máx. (R$)": "R$ {:,.2f}",
+                    "Preço médio (R$)": "R$ {:,.2f}",
+                    "Ofertas": "{:.0f}",
+                    "Δ vs melhor loja (R$)": "R$ {:,.2f}",
+                    "Δ vs melhor loja (%)": "{:.1f}%",
+                }),
                 use_container_width=True,
                 hide_index=True,
             )

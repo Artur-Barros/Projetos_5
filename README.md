@@ -1,6 +1,6 @@
 # Pricefy (Projetos_5)
 
-Pricefy é uma ferramenta de comparação de preços desenvolvida em Python com Streamlit. Ela permite buscar produtos em diversas lojas online (como Kabum, Terabyte e via agregadores como o Zoom) e apresenta os resultados ordenados, destacando automaticamente a melhor oferta.
+Pricefy é uma ferramenta de comparação de preços desenvolvida em Python com Streamlit. Ela permite buscar produtos em diversas lojas online (como Kabum, Terabyte e via agregadores como o Zoom), apresenta os resultados ordenados com variação em relação ao menor preço e gráficos de comparação por oferta e por loja.
 
 ## Pré-requisitos
 
