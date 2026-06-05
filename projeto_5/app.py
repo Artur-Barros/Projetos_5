@@ -5,6 +5,11 @@ from analytics import (
     adicionar_variacao_oferta,
     resumo_por_loja,
     variacao_entre_lojas,
+    sugerir_melhor_oferta,
+)
+from charts import (
+    grafico_avaliacao_preco,
+    grafico_boxplot_precos,
 )
 
 MAX_OFERTAS_GRAFICO = 15
@@ -91,6 +96,9 @@ if search_term:
         if results:
             df = pd.DataFrame(results)
             df = df[df["Preço (R$)"] > 0].reset_index(drop=True)
+            for col, default in [("Avaliação", None), ("Qtd. avaliações", 0)]:
+                if col not in df.columns:
+                    df[col] = default
             if "Categoria" not in df.columns:
                 df["Categoria"] = "Outros"
             else:
@@ -107,6 +115,10 @@ if "df_resultados" in st.session_state:
     if df_full.empty:
         st.warning("Nenhum resultado encontrado. Tente outro termo ou categoria.")
     else:
+        for col, default in [("Avaliação", None), ("Qtd. avaliações", 0)]:
+            if col not in df_full.columns:
+                df_full[col] = default
+
         if categorias_selecionadas:
             cats_filtro = list(categorias_selecionadas)
             if busca_por_categoria:
@@ -133,6 +145,7 @@ if "df_resultados" in st.session_state:
             st.warning("Nenhum resultado com os filtros aplicados. Ajuste os filtros na barra lateral.")
         else:
             df_analise = adicionar_variacao_oferta(df_filtrado)
+            melhor = sugerir_melhor_oferta(df_filtrado)
             preco_min = float(df_analise["Preço (R$)"].min())
             preco_max = float(df_analise["Preço (R$)"].max())
             loja_mais_barata = df_analise.loc[df_analise["Preço (R$)"].idxmin(), "Loja"]
@@ -142,6 +155,21 @@ if "df_resultados" in st.session_state:
             m1.metric("Menor preço", f"R$ {preco_min:,.2f}", loja_mais_barata)
             m2.metric("Maior preço", f"R$ {preco_max:,.2f}")
             m3.metric("Economia potencial", f"R$ {economia:,.2f}")
+
+            if melhor is not None:
+                st.subheader("Melhor opção sugerida")
+                aval_txt = (
+                    f"{melhor['Avaliação']:.1f} ★ ({int(melhor['Qtd. avaliações'])} avaliações)"
+                    if pd.notna(melhor.get("Avaliação"))
+                    else "sem avaliação"
+                )
+                st.success(
+                    f"**{melhor['Produto']}** — {melhor['Loja']} — "
+                    f"R$ {melhor['Preço (R$)']:,.2f} — {aval_txt}. "
+                    f"Critério: maior avaliação entre as ofertas, depois menor preço."
+                )
+                if melhor.get("Link"):
+                    st.link_button("Ver oferta", melhor["Link"])
 
             def highlight_lowest_price(row):
                 if row.name == 0:
@@ -155,14 +183,21 @@ if "df_resultados" in st.session_state:
                 "Δ vs menor (R$)",
                 "Δ vs menor (%)",
             ]
+            if df_analise["Avaliação"].notna().any():
+                colunas_exibir.insert(3, "Avaliação")
+                colunas_exibir.insert(4, "Qtd. avaliações")
+
+            format_map = {
+                "Preço (R$)": "R$ {:,.2f}",
+                "Δ vs menor (R$)": "R$ {:,.2f}",
+                "Δ vs menor (%)": "{:.1f}%",
+                "Avaliação": "{:.1f}",
+                "Qtd. avaliações": "{:.0f}",
+            }
             styled_df = (
                 df_analise[colunas_exibir]
                 .style.apply(highlight_lowest_price, axis=1)
-                .format({
-                    "Preço (R$)": "R$ {:,.2f}",
-                    "Δ vs menor (R$)": "R$ {:,.2f}",
-                    "Δ vs menor (%)": "{:.1f}%",
-                })
+                .format({k: v for k, v in format_map.items() if k in colunas_exibir})
             )
 
             st.dataframe(
@@ -193,6 +228,19 @@ if "df_resultados" in st.session_state:
                 y="Preço (R$)",
                 color="Loja",
             )
+
+            st.subheader("Análise avançada")
+            col_a, col_b = st.columns(2)
+            fig_avaliacao = grafico_avaliacao_preco(df_analise)
+            with col_a:
+                if fig_avaliacao:
+                    st.plotly_chart(fig_avaliacao, use_container_width=True)
+                else:
+                    st.info("Sem dados de avaliação para exibir o gráfico.")
+            fig_box = grafico_boxplot_precos(df_analise)
+            with col_b:
+                if fig_box:
+                    st.plotly_chart(fig_box, use_container_width=True)
 
             st.subheader("Comparação por loja")
             df_lojas = variacao_entre_lojas(resumo_por_loja(df_filtrado))

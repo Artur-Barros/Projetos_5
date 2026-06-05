@@ -1,6 +1,7 @@
 import pandas as pd
 
 COL_PRECO = "Preço (R$)"
+COL_AVAL = "Avaliação"
 
 
 def adicionar_variacao_oferta(df: pd.DataFrame) -> pd.DataFrame:
@@ -54,3 +55,16 @@ def variacao_entre_lojas(df_loja: pd.DataFrame) -> pd.DataFrame:
     out["Δ vs melhor loja (R$)"] = out["Preço mín. (R$)"] - preco_min
     out["Δ vs melhor loja (%)"] = (out["Δ vs melhor loja (R$)"] / preco_min) * 100
     return out
+
+
+def sugerir_melhor_oferta(df: pd.DataFrame) -> pd.Series | None:
+    if df.empty:
+        return None
+
+    com_avaliacao = df[df[COL_AVAL].notna()].copy()
+    if com_avaliacao.empty:
+        return df.loc[df[COL_PRECO].idxmin()]
+
+    max_avaliacao = com_avaliacao[COL_AVAL].max()
+    candidatos = com_avaliacao[com_avaliacao[COL_AVAL] == max_avaliacao]
+    return candidatos.loc[candidatos[COL_PRECO].idxmin()]

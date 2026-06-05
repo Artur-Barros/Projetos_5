@@ -209,6 +209,236 @@ def _normalizar_categoria(categoria_bruta: str, produto: str = "") -> str:
     return classificar_produto(produto, categoria_bruta)
 
 
+def _normalizar_loja(nome: str) -> str:
+    if not nome:
+        return nome
+    chave = re.sub(r"[^a-z0-9]", "", nome.lower())
+    if chave in {"kabum", "kabumbr"}:
+        return "Kabum"
+    return nome.strip()
+
+
+def _kabum_avaliacao_produto(code) -> tuple:
+    cache_key = ("kabum", str(code))
+    if cache_key in _AVALIACAO_CACHE:
+        return _AVALIACAO_CACHE[cache_key]
+
+    try:
+        url = f"https://www.kabum.com.br/produto/{code}"
+        resp = requests.get(url, headers=HEADERS, timeout=8)
+        resp.raise_for_status()
+        script = BeautifulSoup(resp.text, "html.parser").find("script", {"id": "__NEXT_DATA__"})
+        if not script:
+            result = (None, 0)
+        else:
+            rating = (
+                json.loads(script.string)
+                .get("props", {})
+                .get("pageProps", {})
+                .get("product", {})
+                .get("rating")
+                or {}
+            )
+            score = rating.get("score")
+            count = int(rating.get("count") or 0)
+            if count <= 0 or score is None:
+                result = (None, 0)
+            else:
+                result = (float(score), count)
+    except Exception:
+        result = (None, 0)
+
+    _AVALIACAO_CACHE[cache_key] = result
+    return result
+
+
+def _avaliacao_kabum(produto: dict) -> tuple:
+    count = int(produto.get("ratingCount") or 0)
+    score = produto.get("rating")
+    if count > 0 and score is not None:
+        return float(score), count
+    code = produto.get("code")
+    if code:
+        return _kabum_avaliacao_produto(code)
+    return None, 0
+
+
+def _montar_resultado(produto, preco, loja, categoria, link, avaliacao=None, qtd_avaliacoes=0):
+    score, count = _validar_avaliacao(avaliacao, qtd_avaliacoes)
+    return {
+        "Produto": produto,
+        "Preço (R$)": float(preco),
+        "Loja": _normalizar_loja(loja),
+        "Categoria": categoria,
+        "Link": link,
+        "Avaliação": score,
+        "Qtd. avaliações": count,
+    }
+
+
+_AVALIACAO_CACHE = {}
+_MAX_ENRIQUECIMENTO = 20
+
+
+def _limpar_cache_avaliacao():
+    _AVALIACAO_CACHE.clear()
+
+
+def _validar_avaliacao(score, count=0):
+    if score is None:
+        return None, 0
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        return None, 0
+    if score <= 0:
+        return None, 0
+    return score, int(count or 0)
+
+
+def _codigo_kabum_link(link):
+    match = re.search(r"kabum\.com\.br/produto/(\d+)", link or "", re.I)
+    return match.group(1) if match else None
+
+
+def _zoom_avaliacao_produto(url_ou_path):
+    if not url_ou_path:
+        return None, 0
+    cache_key = ("zoom", url_ou_path)
+    if cache_key in _AVALIACAO_CACHE:
+        return _AVALIACAO_CACHE[cache_key]
+
+    try:
+        url = url_ou_path if str(url_ou_path).startswith("http") else f"https://www.zoom.com.br{url_ou_path}"
+        resp = requests.get(url, headers=HEADERS, timeout=8)
+        resp.raise_for_status()
+        script = BeautifulSoup(resp.text, "html.parser").find("script", {"id": "__NEXT_DATA__"})
+        if not script:
+            result = (None, 0)
+        else:
+            products = (
+                json.loads(script.string)
+                .get("props", {})
+                .get("initialReduxState", {})
+                .get("products")
+                or {}
+            )
+            result = (None, 0)
+            if isinstance(products, dict):
+                for val in products.values():
+                    if not isinstance(val, dict):
+                        continue
+                    prod = val.get("product") or {}
+                    if not isinstance(prod, dict):
+                        continue
+                    score, count = _validar_avaliacao(
+                        prod.get("rating"),
+                        val.get("countOfComments") or prod.get("countOfComments"),
+                    )
+                    if score is not None:
+                        result = (score, count)
+                        break
+    except Exception:
+        result = (None, 0)
+
+    _AVALIACAO_CACHE[cache_key] = result
+    return result
+
+
+def _avaliacao_zoom(hit):
+    return _validar_avaliacao(hit.get("rating"), hit.get("countOfComments"))
+
+
+def _avaliacao_terabyte_card(card):
+    img = card.select_one(".ratings img[alt]")
+    if not img:
+        return None, 0
+    match = re.match(r"(\d)_(\d)", img.get("alt", ""))
+    if not match:
+        return None, 0
+    score = float(f"{match.group(1)}.{match.group(2)}")
+    count = 0
+    for span in card.select(".ratings span"):
+        cm = re.search(r"\((\d+)\)", span.get_text(strip=True))
+        if cm:
+            count = int(cm.group(1))
+            break
+    return _validar_avaliacao(score, count)
+
+
+def _tokens_produto(nome):
+    stop = {"de", "da", "do", "com", "para", "em", "e", "o", "a", "os", "as", "por"}
+    return {
+        w for w in re.findall(r"\w{3,}", (nome or "").lower())
+        if w not in stop
+    }
+
+
+def _similaridade_produto(nome_a, nome_b):
+    ta, tb = _tokens_produto(nome_a), _tokens_produto(nome_b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def _aplicar_avaliacao(item, score, count):
+    score, count = _validar_avaliacao(score, count)
+    if score is None:
+        return
+    item["Avaliação"] = score
+    item["Qtd. avaliações"] = count
+
+
+def _propagar_avaliacoes(resultados):
+    com_avaliacao = [
+        item for item in resultados
+        if item.get("Avaliação") is not None
+    ]
+    if not com_avaliacao:
+        return resultados
+
+    for item in resultados:
+        if item.get("Avaliação") is not None:
+            continue
+        melhor_score = None
+        melhor_count = 0
+        melhor_sim = 0.0
+        for ref in com_avaliacao:
+            sim = _similaridade_produto(item.get("Produto", ""), ref.get("Produto", ""))
+            if sim >= 0.55 and sim > melhor_sim:
+                melhor_sim = sim
+                melhor_score = ref["Avaliação"]
+                melhor_count = ref["Qtd. avaliações"]
+        if melhor_score is not None:
+            _aplicar_avaliacao(item, melhor_score, melhor_count)
+    return resultados
+
+
+def _enriquecer_avaliacoes(resultados):
+    resultados = _propagar_avaliacoes(resultados)
+    requisicoes = 0
+
+    for item in resultados:
+        if item.get("Avaliação") is not None:
+            continue
+        if requisicoes >= _MAX_ENRIQUECIMENTO:
+            break
+
+        link = item.get("Link") or ""
+        score, count = None, 0
+
+        if "zoom.com.br" in link:
+            score, count = _zoom_avaliacao_produto(link)
+            requisicoes += 1
+        elif code := _codigo_kabum_link(link):
+            score, count = _kabum_avaliacao_produto(code)
+            requisicoes += 1
+
+        _aplicar_avaliacao(item, score, count)
+
+    return _propagar_avaliacoes(resultados)
+
+
 def search_kabum(query, limit=5):
     url = f"https://www.kabum.com.br/busca/{urllib.parse.quote(query)}"
     try:
@@ -249,13 +479,17 @@ def search_kabum(query, limit=5):
                     or ""
                 )
 
-            results.append({
-                "Produto": p.get("name", ""),
-                "Preço (R$)": float(price),
-                "Loja": "Kabum",
-                "Categoria": classificar_produto(p.get("name", ""), raw_cat),
-                "Link": f"https://www.kabum.com.br/produto/{p.get('code', '')}",
-            })
+            avaliacao, qtd_avaliacoes = _avaliacao_kabum(p)
+
+            results.append(_montar_resultado(
+                produto=p.get("name", ""),
+                preco=price,
+                loja="Kabum",
+                categoria=classificar_produto(p.get("name", ""), raw_cat),
+                link=f"https://www.kabum.com.br/produto/{p.get('code', '')}",
+                avaliacao=avaliacao,
+                qtd_avaliacoes=qtd_avaliacoes,
+            ))
         return results
     except Exception:
         return []
@@ -295,13 +529,17 @@ def search_terabyte(query, limit=5):
                 except Exception:
                     pass
 
-                results.append({
-                    "Produto": name,
-                    "Preço (R$)": price,
-                    "Loja": "Terabyte",
-                    "Categoria": classificar_produto(name, raw_cat),
-                    "Link": link,
-                })
+                avaliacao, qtd_avaliacoes = _avaliacao_terabyte_card(card)
+
+                results.append(_montar_resultado(
+                    produto=name,
+                    preco=price,
+                    loja="Terabyte",
+                    categoria=classificar_produto(name, raw_cat),
+                    link=link,
+                    avaliacao=avaliacao,
+                    qtd_avaliacoes=qtd_avaliacoes,
+                ))
             except (ValueError, AttributeError):
                 continue
         return results
@@ -346,13 +584,17 @@ def search_zoom(query, limit=5):
                     if breadcrumbs:
                         raw_cat = " ".join(b.get("name", "") for b in breadcrumbs if b.get("name"))
 
-                results.append({
-                    "Produto": name,
-                    "Preço (R$)": float(price),
-                    "Loja": merchant,
-                    "Categoria": classificar_produto(name, raw_cat),
-                    "Link": link,
-                })
+                avaliacao, qtd_avaliacoes = _avaliacao_zoom(h)
+
+                results.append(_montar_resultado(
+                    produto=name,
+                    preco=price,
+                    loja=merchant,
+                    categoria=classificar_produto(name, raw_cat),
+                    link=link,
+                    avaliacao=avaliacao,
+                    qtd_avaliacoes=qtd_avaliacoes,
+                ))
             except (ValueError, TypeError):
                 continue
         return results
@@ -383,7 +625,7 @@ def _dedupe_resultados(resultados):
             continue
         vistos.add(chave)
         unicos.append(item)
-    return unicos
+    return _enriquecer_avaliacoes(unicos)
 
 
 def search_for_category(categoria: str, limit_por_query=None):
@@ -405,6 +647,7 @@ def search_for_category(categoria: str, limit_por_query=None):
 
 
 def search_for_categories(categorias: list[str]):
+    _limpar_cache_avaliacao()
     acumulado = []
     for cat in categorias:
         acumulado.extend(search_for_category(cat))
@@ -412,6 +655,7 @@ def search_for_categories(categorias: list[str]):
 
 
 def search_all(query, limit=10):
+    _limpar_cache_avaliacao()
     all_results = []
     sources = [search_zoom, search_kabum, search_terabyte]
     for func in sources:
